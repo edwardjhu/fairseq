@@ -64,6 +64,7 @@ class _FP16OptimizerMixin(object):
             fp32_params = []
             for p in params:
                 p32 = torch.nn.Parameter(p.data.float())
+                p32.__dict__.update(p.__dict__)
                 p32.grad = torch.zeros_like(p32.data)
                 fp32_params.append(p32)
             return fp32_params
