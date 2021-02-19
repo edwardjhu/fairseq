@@ -17,6 +17,8 @@ class FairseqDecoder(nn.Module):
         super().__init__()
         self.dictionary = dictionary
         self.onnx_trace = False
+        self.adaptive_softmax = None
+
 
     def forward(self, prev_output_tokens, encoder_out=None, **kwargs):
         """
@@ -82,8 +84,8 @@ class FairseqDecoder(nn.Module):
         """Maximum input length supported by the decoder."""
         return 1e6  # an arbitrary large number
 
-    def upgrade_state_dict(self, state_dict):
-        """Upgrade a (possibly old) state dict for new versions of fairseq."""
+    def upgrade_state_dict_named(self, state_dict, name):
+        """Upgrade old state dicts to work with newer code."""
         return state_dict
 
     def prepare_for_onnx_export_(self):

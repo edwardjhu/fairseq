@@ -18,10 +18,6 @@ class BaseScorer(ABC):
         self.ref = []
         self.pred = []
 
-    @staticmethod
-    def add_args(parser):
-        pass
-
     def add_string(self, ref, pred):
         self.ref.append(ref)
         self.pred.append(pred)
@@ -41,10 +37,9 @@ _build_scorer, register_scorer, SCORER_REGISTRY, _ = registry.setup_registry(
 
 
 def build_scorer(choice, tgt_dict):
-    if isinstance(choice, DictConfig):
-        choice = choice._name
+    _choice = choice._name if isinstance(choice, DictConfig) else choice
 
-    if choice == "bleu":
+    if _choice == "bleu":
         from fairseq.scoring import bleu
 
         return bleu.Scorer(

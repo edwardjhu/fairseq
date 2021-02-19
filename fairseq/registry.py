@@ -7,7 +7,8 @@ from argparse import Namespace
 
 from typing import Union
 from fairseq.dataclass import FairseqDataclass
-from fairseq.dataclass.utils import populate_dataclass
+from fairseq.dataclass.utils import populate_dataclass, merge_with_parent
+from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig
 
 REGISTRIES = {}
@@ -24,21 +25,31 @@ def setup_registry(registry_name: str, base_class=None, default=None, required=F
     # maintain a registry of all registries
     if registry_name in REGISTRIES:
         return  # registry already exists
-    REGISTRIES[registry_name] = {"registry": REGISTRY, "default": default, "dataclass_registry": DATACLASS_REGISTRY}
+    REGISTRIES[registry_name] = {
+        "registry": REGISTRY,
+        "default": default,
+        "dataclass_registry": DATACLASS_REGISTRY,
+    }
 
     def build_x(cfg: Union[DictConfig, str, Namespace], *extra_args, **extra_kwargs):
         if isinstance(cfg, DictConfig):
             choice = cfg._name
+
+            if choice and choice in DATACLASS_REGISTRY:
+                dc = DATACLASS_REGISTRY[choice]
+                cfg = merge_with_parent(dc(), cfg)
         elif isinstance(cfg, str):
             choice = cfg
+            if choice in DATACLASS_REGISTRY:
+                cfg = DATACLASS_REGISTRY[choice]()
         else:
             choice = getattr(cfg, registry_name, None)
             if choice in DATACLASS_REGISTRY:
-                cfg = populate_dataclass(cfg, DATACLASS_REGISTRY[choice]())
+                cfg = populate_dataclass(DATACLASS_REGISTRY[choice](), cfg)
 
         if choice is None:
             if required:
-                raise ValueError('{} is required!'.format(registry_name))
+                raise ValueError("{} is required!".format(registry_name))
             return None
 
         cls = REGISTRY[choice]
@@ -72,9 +83,16 @@ def setup_registry(registry_name: str, base_class=None, default=None, required=F
                 )
 
             cls.__dataclass = dataclass
-            REGISTRY[name] = cls
             if cls.__dataclass is not None:
                 DATACLASS_REGISTRY[name] = cls.__dataclass
+
+                cs = ConfigStore.instance()
+                node = dataclass()
+                node._name = name
+                cs.store(name=name, group=registry_name, node=node, provider="fairseq")
+
+            REGISTRY[name] = cls
+
             return cls
 
         return register_x_cls

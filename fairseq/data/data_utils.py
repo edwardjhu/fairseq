@@ -80,8 +80,8 @@ def load_indexed_dataset(
             combine 'data-bin/train', 'data-bin/train1', ... and return a
             single ConcatDataset instance.
     """
-    from fairseq.data.concat_dataset import ConcatDataset
     import fairseq.data.indexed_dataset as indexed_dataset
+    from fairseq.data.concat_dataset import ConcatDataset
 
     datasets = []
     for k in itertools.count():
@@ -99,7 +99,7 @@ def load_indexed_dataset(
         )
         if dataset is None:
             break
-        logger.info("loaded {} examples from: {}".format(len(dataset), path_k))
+        logger.info("loaded {:,} examples from: {}".format(len(dataset), path_k))
         datasets.append(dataset)
         if not combine:
             break
@@ -164,12 +164,6 @@ def _filter_by_size_dynamic(indices, size_fn, max_positions, raise_exception=Fal
                 for key in intersect_keys
             )
         else:
-            # Hacky as heck, for the specific case of multilingual training with RoundRobin.
-            if isinstance(size_fn(idx), dict) and isinstance(max_positions, tuple):
-                return all(
-                    a is None or b is None or compare_leq(a, b)
-                    for a, b in zip(size_fn(idx).values(), max_positions)
-                )
             # For MultiCorpusSampledDataset, will generalize it later
             if not isinstance(size_fn(idx), Iterable):
                 return all(size_fn(idx) <= b for b in max_positions)
@@ -276,6 +270,7 @@ def filter_paired_dataset_indices_by_size(src_sizes, tgt_sizes, indices, max_siz
 def batch_by_size(
     indices,
     num_tokens_fn,
+    num_tokens_vec=None,
     max_tokens=None,
     max_sentences=None,
     required_batch_size_multiple=1,
@@ -289,6 +284,8 @@ def batch_by_size(
         indices (List[int]): ordered list of dataset indices
         num_tokens_fn (callable): function that returns the number of tokens at
             a given index
+        num_tokens_vec (List[int], optional): precomputed vector of the number
+            of tokens for each index in indices (to enable faster batch generation)
         max_tokens (int, optional): max number of tokens in each batch
             (default: None).
         max_sentences (int, optional): max number of sentences in each
@@ -301,7 +298,8 @@ def batch_by_size(
     """
     try:
         from fairseq.data.data_utils_fast import (
-            batch_by_size_fast,
+            batch_by_size_fn,
+            batch_by_size_vec,
             batch_fixed_shapes_fast,
         )
     except ImportError:
@@ -309,22 +307,43 @@ def batch_by_size(
             "Please build Cython components with: `pip install --editable .` "
             "or `python setup.py build_ext --inplace`"
         )
+    except ValueError:
+        raise ValueError(
+            "Please build (or rebuild) Cython components with: `pip install "
+            " --editable .` or `python setup.py build_ext --inplace`."
+        )
 
-    max_tokens = max_tokens if max_tokens is not None else -1
+    # added int() to avoid TypeError: an integer is required
+    max_tokens = (
+        int(max_tokens) if max_tokens is not None else -1
+    )
     max_sentences = max_sentences if max_sentences is not None else -1
     bsz_mult = required_batch_size_multiple
 
     if not isinstance(indices, np.ndarray):
         indices = np.fromiter(indices, dtype=np.int64, count=-1)
 
+    if num_tokens_vec is not None and not isinstance(num_tokens_vec, np.ndarray):
+        num_tokens_vec = np.fromiter(num_tokens_vec, dtype=np.int64, count=-1)
+
     if fixed_shapes is None:
-        return batch_by_size_fast(
-            indices,
-            num_tokens_fn,
-            max_tokens,
-            max_sentences,
-            bsz_mult,
-        )
+        if num_tokens_vec is None:
+            return batch_by_size_fn(
+                indices,
+                num_tokens_fn,
+                max_tokens,
+                max_sentences,
+                bsz_mult,
+            )
+        else:
+            return batch_by_size_vec(
+                indices,
+                num_tokens_vec,
+                max_tokens,
+                max_sentences,
+                bsz_mult,
+            )
+
     else:
         fixed_shapes = np.array(fixed_shapes, dtype=np.int64)
         sort_order = np.lexsort(
@@ -346,8 +365,14 @@ def post_process(sentence: str, symbol: str):
         sentence = sentence.replace(" ", "").replace("|", " ").strip()
     elif symbol == "_EOW":
         sentence = sentence.replace(" ", "").replace("_EOW", " ").strip()
-    elif symbol is not None and symbol != "none":
+    elif symbol in {"subword_nmt", "@@ ", "@@"}:
+        if symbol == "subword_nmt":
+            symbol = "@@ "
         sentence = (sentence + " ").replace(symbol, "").rstrip()
+    elif symbol == "none":
+        pass
+    elif symbol is not None:
+        raise NotImplementedError(f"Unknown post_process option: {symbol}")
     return sentence
 
 

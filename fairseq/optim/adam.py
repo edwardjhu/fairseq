@@ -5,7 +5,7 @@
 
 import logging
 import math
-from collections import Collection
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import List
 
@@ -95,7 +95,7 @@ class FairseqAdam(FairseqOptimizer):
 
 
 class Adam(torch.optim.Optimizer):
-    """Implements Adam algorithm.
+    r"""Implements Adam algorithm.
 
     This implementation is modified from torch.optim.Adam based on:
     `Fixed Weight Decay Regularization in Adam`
@@ -103,7 +103,7 @@ class Adam(torch.optim.Optimizer):
 
     It has been proposed in `Adam: A Method for Stochastic Optimization`_.
 
-    Arguments:
+    Args:
         params (iterable): iterable of parameters to optimize or dicts defining
             parameter groups
         lr (float, optional): learning rate (default: 1e-3)
@@ -146,7 +146,7 @@ class Adam(torch.optim.Optimizer):
     def step(self, closure=None):
         """Performs a single optimization step.
 
-        Arguments:
+        Args:
             closure (callable, optional): A closure that reevaluates the model
                 and returns the loss.
         """

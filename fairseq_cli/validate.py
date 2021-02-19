@@ -1,5 +1,4 @@
 #!/usr/bin/env python3 -u
-# !/usr/bin/env python3 -u
 # Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
@@ -13,11 +12,8 @@ from itertools import chain
 
 import torch
 from fairseq import checkpoint_utils, distributed_utils, options, utils
-from fairseq.dataclass.initialize import register_hydra_cfg
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf
 from fairseq.logging import metrics, progress_bar
-from hydra.core.config_store import ConfigStore
-from hydra.experimental import initialize
 from omegaconf import DictConfig
 
 
@@ -46,6 +42,13 @@ def main(cfg: DictConfig, override_args=None):
     if use_cuda:
         torch.cuda.set_device(cfg.distributed_training.device_id)
 
+    if cfg.distributed_training.distributed_world_size > 1:
+        data_parallel_world_size = distributed_utils.get_data_parallel_world_size()
+        data_parallel_rank = distributed_utils.get_data_parallel_rank()
+    else:
+        data_parallel_world_size = 1
+        data_parallel_rank = 0
+
     if override_args is not None:
         overrides = vars(override_args)
         overrides.update(eval(getattr(override_args, "model_overrides", "{}")))
@@ -54,7 +57,7 @@ def main(cfg: DictConfig, override_args=None):
 
     # Load ensemble
     logger.info("loading model(s) from {}".format(cfg.common_eval.path))
-    models, model_args, task = checkpoint_utils.load_model_ensemble_and_task(
+    models, saved_cfg, task = checkpoint_utils.load_model_ensemble_and_task(
         [cfg.common_eval.path],
         arg_overrides=overrides,
         suffix=cfg.checkpoint.checkpoint_suffix,
@@ -69,15 +72,15 @@ def main(cfg: DictConfig, override_args=None):
             model.cuda()
 
     # Print args
-    logger.info(model_args)
+    logger.info(saved_cfg)
 
     # Build criterion
-    criterion = task.build_criterion(model_args.criterion)
+    criterion = task.build_criterion(saved_cfg.criterion)
     criterion.eval()
 
     for subset in cfg.dataset.valid_subset.split(","):
         try:
-            task.load_dataset(subset, combine=False, epoch=1)
+            task.load_dataset(subset, combine=False, epoch=1, task_cfg=saved_cfg.task)
             dataset = task.dataset(subset)
         except KeyError:
             raise Exception("Cannot find dataset: " + subset)
@@ -94,8 +97,8 @@ def main(cfg: DictConfig, override_args=None):
             ignore_invalid_inputs=cfg.dataset.skip_invalid_size_inputs_valid_test,
             required_batch_size_multiple=cfg.dataset.required_batch_size_multiple,
             seed=cfg.common.seed,
-            num_shards=cfg.distributed_training.distributed_world_size,
-            shard_id=cfg.distributed_training.distributed_rank,
+            num_shards=data_parallel_world_size,
+            shard_id=data_parallel_rank,
             num_workers=cfg.dataset.num_workers,
             data_buffer_size=cfg.dataset.data_buffer_size,
         ).next_epoch_itr(shuffle=False)
@@ -114,10 +117,11 @@ def main(cfg: DictConfig, override_args=None):
             progress.log(log_output, step=i)
             log_outputs.append(log_output)
 
-        if cfg.distributed_training.distributed_world_size > 1:
+        if data_parallel_world_size > 1:
             log_outputs = distributed_utils.all_gather_list(
                 log_outputs,
                 max_size=cfg.common.all_gather_list_size,
+                group=distributed_utils.get_data_parallel_group(),
             )
             log_outputs = list(chain.from_iterable(log_outputs))
 
@@ -134,13 +138,14 @@ def cli_main():
 
     # only override args that are explicitly given on the command line
     override_parser = options.get_validation_parser()
-    override_args = options.parse_args_and_arch(override_parser, suppress_defaults=True)
+    override_args = options.parse_args_and_arch(
+        override_parser, suppress_defaults=True
+    )
 
-    distributed_utils.call_main(args, main, override_args=override_args)
+    distributed_utils.call_main(
+        convert_namespace_to_omegaconf(args), main, override_args=override_args
+    )
 
 
 if __name__ == "__main__":
-    cs = ConfigStore.instance()
-    register_hydra_cfg(cs)
-    initialize(config_path="../config", strict=True)
     cli_main()

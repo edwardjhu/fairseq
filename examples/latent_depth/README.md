@@ -14,7 +14,7 @@ lang_pairs_str="eng-aze,eng-bel,eng-ces,eng-glg,eng-por,eng-rus,eng-slk,eng-tur"
 databin_dir=<path to binarized data>
 
 fairseq-train ${databin_dir} \
-  --user-dir, examples/latent_depth/src \
+  --user-dir examples/latent_depth/latent_depth_src \
   --lang-pairs "${lang_pairs_str}" \
   --arch multilingual_transformer_iwslt_de_en \
   --task multilingual_translation_latent_depth \
@@ -25,12 +25,12 @@ fairseq-train ${databin_dir} \
   --share-decoder-input-output-embed \
   --dropout 0.3 --attention-dropout 0.3 \
   --optimizer adam --adam-eps 1e-06 --adam-betas '(0.9, 0.98)' \
-  --lr-scheduler inverse_sqrt --min-lr 1e-9 --warmup-init-lr 1e-7 --warmup-updates 8000 \
+  --lr-scheduler inverse_sqrt --stop-min-lr 1e-9 --warmup-init-lr 1e-7 --warmup-updates 8000 \
   --max-tokens 4096 --update-freq 1  \
   --lr 0.0015 \
   --clip-norm 1.0 \
   --seed 2 \
-  --ddp-backend=no_c10d \
+  --ddp-backend=legacy_ddp \
   --encoder-layers 12 \
   --decoder-layers 24 \
   --decoder-latent-layer \

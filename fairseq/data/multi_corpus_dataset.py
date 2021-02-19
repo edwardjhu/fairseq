@@ -126,7 +126,11 @@ class MultiCorpusDataset(FairseqDataset):
 
     def __getitem__(self, index):
         index, key = self._map_index(index)
-        return self.datasets[key][index]
+        try:
+            return self.datasets[key][index]
+        except Exception as e:
+            e.args = (f"Error from {key} dataset", *e.args)
+            raise
 
     def collater(self, samples):
         """
@@ -157,3 +161,10 @@ class MultiCorpusDataset(FairseqDataset):
     @property
     def supports_prefetch(self):
         return False
+
+    @property
+    def supports_fetch_outside_dataloader(self):
+        return all(
+            self.datasets[key].supports_fetch_outside_dataloader
+            for key in self.datasets
+        )

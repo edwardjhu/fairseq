@@ -66,6 +66,8 @@ class _FP16OptimizerMixin(object):
                 p32 = torch.nn.Parameter(p.data.float())
                 p32.__dict__.update(p.__dict__)
                 p32.grad = torch.zeros_like(p32.data)
+                if hasattr(p, "param_group"):
+                    p32.param_group = p.param_group
                 fp32_params.append(p32)
             return fp32_params
 
@@ -128,7 +130,10 @@ class _FP16OptimizerMixin(object):
                     if not p.requires_grad:
                         continue
                     if p.grad is not None:
-                        p32.grad.data.copy_(p.grad.data)
+                        if p32.grad is None:
+                            p32.grad = p.grad.data.float()
+                        else:
+                            p32.grad.data.copy_(p.grad.data)
                     else:
                         p32.grad = torch.zeros_like(p.data, dtype=torch.float)
 
@@ -160,7 +165,16 @@ class _FP16OptimizerMixin(object):
 
     def _unscale_grads(self):
         self._sync_fp16_grads_to_fp32()
-        if self._multiply_factor != 1.0:
+        if (
+            # Skip the multiplication if it's a no-op (i.e., if _multiply_factor
+            # is 1.0). At the same time, we want to avoid the device-to-host
+            # transfer by comparing it to 1.0. Since _multiply_factor starts as
+            # a Python float, we roughly assume that if it's a tensor then it's
+            # probably not =1.0 anymore and we do the multiplication. Otherwise
+            # we can safely check the value without a D2H transfer.
+            torch.is_tensor(self._multiply_factor)
+            or self._multiply_factor != 1.0
+        ):
             self.fp32_optimizer.multiply_grads(self._multiply_factor)
             self._multiply_factor = 1.0
 
@@ -187,15 +201,15 @@ class _FP16OptimizerMixin(object):
 
         return grad_norm
 
-    def step(self, closure=None):
+    def step(self, closure=None, groups=None):
         """Performs a single optimization step."""
         self._sync_fp16_grads_to_fp32()
 
         if getattr(self, "supports_step_with_scale", False):
-            self.fp32_optimizer.step(closure, scale=(1.0 / self._multiply_factor))
+            self.fp32_optimizer.step(closure, scale=(1.0 / self._multiply_factor), groups=groups)
         else:
             self._unscale_grads()
-            self.fp32_optimizer.step(closure)
+            self.fp32_optimizer.step(closure, groups=groups)
 
         if self.scaler is not None:
             self.scaler.update()
@@ -216,7 +230,8 @@ class _FP16OptimizerMixin(object):
                 raise RuntimeError("self.fp32_params must be a tensor or dict")
         else:
             for p32 in self.fp32_params:
-                p32.grad.zero_()
+                if p32.grad is not None:
+                    p32.grad.zero_()
         self._needs_sync = False
 
         if self.scaler is not None:
@@ -292,6 +307,10 @@ class FP16Optimizer(_FP16OptimizerMixin, optim.FairseqOptimizer):
         self.fp32_optimizer.optimizer = optimizer
 
     @property
+    def lr_scheduler(self):
+        return getattr(self.fp32_optimizer, "lr_scheduler", None)
+
+    @property
     def optimizer_config(self):
         return self.fp32_optimizer.optimizer_config
 
@@ -300,6 +319,9 @@ class FP16Optimizer(_FP16OptimizerMixin, optim.FairseqOptimizer):
 
     def set_lr(self, lr):
         self.fp32_optimizer.set_lr(lr)
+
+    def all_reduce_grads(self, module):
+        self.fp32_optimizer.all_reduce_grads(module)
 
 
 class _MemoryEfficientFP16OptimizerMixin(object):
@@ -364,7 +386,16 @@ class _MemoryEfficientFP16OptimizerMixin(object):
         loss.backward()
 
     def _unscale_grads(self):
-        if self._multiply_factor != 1.0:
+        if (
+            # Skip the multiplication if it's a no-op (i.e., if _multiply_factor
+            # is 1.0). At the same time, we want to avoid the device-to-host
+            # transfer by comparing it to 1.0. Since _multiply_factor starts as
+            # a Python float, we roughly assume that if it's a tensor then it's
+            # probably not =1.0 anymore and we do the multiplication. Otherwise
+            # we can safely check the value without a D2H transfer.
+            torch.is_tensor(self._multiply_factor)
+            or self._multiply_factor != 1.0
+        ):
             self.wrapped_optimizer.multiply_grads(self._multiply_factor)
             self._multiply_factor = 1.0
 
@@ -392,14 +423,14 @@ class _MemoryEfficientFP16OptimizerMixin(object):
 
         return grad_norm
 
-    def step(self, closure=None):
+    def step(self, closure=None, groups=None):
         """Performs a single optimization step."""
         if getattr(self, "supports_step_with_scale", False):
             # NOTE(msb) optimizer divides by scale factor
-            self.wrapped_optimizer.step(closure, scale=(1.0 / self._multiply_factor))
+            self.wrapped_optimizer.step(closure, scale=(1.0 / self._multiply_factor), groups=groups)
         else:
             self._unscale_grads()
-            self.wrapped_optimizer.step(closure)
+            self.wrapped_optimizer.step(closure, groups=groups)
 
         if self.scaler is not None:
             self.scaler.update()
@@ -450,7 +481,7 @@ class MemoryEfficientFP16Optimizer(
                 cfg.distributed_training.distributed_world_size
                 / cfg.common.model_parallel_size
             )
-            scale_window = (
+            scale_window = int(
                 2 ** 14 / data_parallel_size / cfg.optimization.update_freq[0]
             )
         else:
@@ -490,8 +521,15 @@ class MemoryEfficientFP16Optimizer(
     def optimizer_config(self):
         return self.wrapped_optimizer.optimizer_config
 
+    @property
+    def lr_scheduler(self):
+        return getattr(self.wrapped_optimizer, "lr_scheduler", None)
+
     def get_lr(self):
         return self.wrapped_optimizer.get_lr()
 
     def set_lr(self, lr):
         self.wrapped_optimizer.set_lr(lr)
+
+    def all_reduce_grads(self, module):
+        self.wrapped_optimizer.all_reduce_grads(module)

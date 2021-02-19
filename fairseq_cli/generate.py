@@ -18,13 +18,9 @@ from itertools import chain
 import numpy as np
 import torch
 from fairseq import checkpoint_utils, options, scoring, tasks, utils
-from fairseq.data import encoders
-from fairseq.dataclass.initialize import register_hydra_cfg
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf
 from fairseq.logging import progress_bar
 from fairseq.logging.meters import StopwatchMeter, TimeMeter
-from hydra.core.config_store import ConfigStore
-from hydra.experimental import initialize
 from omegaconf import DictConfig
 
 
@@ -84,7 +80,7 @@ def _main(cfg: DictConfig, output_file):
 
     # Load dataset splits
     task = tasks.setup_task(cfg.task)
-    task.load_dataset(cfg.dataset.gen_subset)
+
 
     # Set dictionaries
     try:
@@ -97,7 +93,7 @@ def _main(cfg: DictConfig, output_file):
 
     # Load ensemble
     logger.info("loading model(s) from {}".format(cfg.common_eval.path))
-    models, _model_args = checkpoint_utils.load_model_ensemble(
+    models, saved_cfg = checkpoint_utils.load_model_ensemble(
         utils.split_paths(cfg.common_eval.path),
         arg_overrides=overrides,
         task=task,
@@ -105,6 +101,9 @@ def _main(cfg: DictConfig, output_file):
         strict=(cfg.checkpoint.checkpoint_shard_count == 1),
         num_shards=cfg.checkpoint.checkpoint_shard_count,
     )
+
+    # loading the dataset should happen after the checkpoint has been loaded so we can give it the saved task config
+    task.load_dataset(cfg.dataset.gen_subset, task_cfg=saved_cfg.task)
 
     if cfg.generation.lm_path is not None:
         overrides["data"] = cfg.task.data
@@ -166,12 +165,12 @@ def _main(cfg: DictConfig, output_file):
 
     extra_gen_cls_kwargs = {"lm_model": lms[0], "lm_weight": cfg.generation.lm_weight}
     generator = task.build_generator(
-        models, cfg.task, extra_gen_cls_kwargs=extra_gen_cls_kwargs
+        models, cfg.generation, extra_gen_cls_kwargs=extra_gen_cls_kwargs
     )
 
     # Handle tokenization and BPE
-    tokenizer = encoders.build_tokenizer(cfg.tokenizer)
-    bpe = encoders.build_bpe(cfg.bpe)
+    tokenizer = task.build_tokenizer(cfg.tokenizer)
+    bpe = task.build_bpe(cfg.bpe)
 
     def decode_fn(x):
         if bpe is not None:
@@ -299,7 +298,7 @@ def _main(cfg: DictConfig, output_file):
                         file=output_file,
                     )
 
-                    if cfg.generation.print_alignment:
+                    if cfg.generation.print_alignment == "hard":
                         print(
                             "A-{}\t{}".format(
                                 sample_id,
@@ -307,6 +306,19 @@ def _main(cfg: DictConfig, output_file):
                                     [
                                         "{}-{}".format(src_idx, tgt_idx)
                                         for src_idx, tgt_idx in alignment
+                                    ]
+                                ),
+                            ),
+                            file=output_file,
+                        )
+                    if cfg.generation.print_alignment == "soft":
+                        print(
+                            "A-{}\t{}".format(
+                                sample_id,
+                                " ".join(
+                                    [
+                                        ",".join(src_probs)
+                                        for src_probs in alignment
                                     ]
                                 ),
                             ),
@@ -357,7 +369,7 @@ def _main(cfg: DictConfig, output_file):
 
     logger.info("NOTE: hypothesis and token scores are output in base 2")
     logger.info(
-        "Translated {} sentences ({} tokens) in {:.1f}s ({:.2f} sentences/s, {:.2f} tokens/s)".format(
+        "Translated {:,} sentences ({:,} tokens) in {:.1f}s ({:.2f} sentences/s, {:.2f} tokens/s)".format(
             num_sentences,
             gen_timer.n,
             gen_timer.sum,
@@ -393,7 +405,4 @@ def cli_main():
 
 
 if __name__ == "__main__":
-    cs = ConfigStore.instance()
-    register_hydra_cfg(cs)
-    initialize(config_path="../config", strict=True)
     cli_main()
